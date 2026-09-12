@@ -17,6 +17,9 @@ const HOME = '/Users/someone';
 const PROJECT = HOME + '/work';
 const PROJECT_ROOT = PROJECT + '/.dsh/skills';
 const AGENTS_ROOT = HOME + '/.agents/skills';
+// Present on disk, but its listing fails — the one case that must NOT be folded
+// into `absent`.
+const LOCKED_ROOT = HOME + '/locked/skills';
 
 const FILES = {};
 function put(root, name, skillMd, sourceJson) {
@@ -32,7 +35,12 @@ put(PROJECT_ROOT, 'humanizer',
   '---\nname: humanizer\ndescription: |\n  Rewrite AI-sounding text so it reads like the writer.\n  Use when editing prose for AI tells.\nmetadata:\n  version: "3.0.0"\n---\nbody\n',
   { repo: 'blader/humanizer', ref: 'HEAD', local_sha: '9862685f575c65a8247f90369951df1b3416e3d6', synced_at: '2026-09-12T00:00:00Z' });
 
-// behind — local SHA is an older commit.
+// behind — the recorded local SHA differs from the remote one the stub returns.
+// The SHA is a FIXTURE VALUE, not a claim about this repository's history: the
+// shell is stubbed, so nothing is fetched. (kepano/obsidian-skills in fact holds
+// only one commit for this skill, so it cannot supply a real older version.)
+// The genuine behind case — humanizer at v2.11.1 while upstream is v3.0.0, both
+// real tags — is verified against the network outside this file.
 put(PROJECT_ROOT, 'knap',
   '---\nname: knap\ndescription: Clean markdown render from templates and structured data.\nversion: 1.0.0\n---\nbody\n',
   { repo: 'kepano/obsidian-skills', ref: 'HEAD', local_sha: '62f144dac6cb5011d8f0574c3fed23c6565220d5', synced_at: '2026-09-12T00:00:00Z' });
@@ -70,20 +78,41 @@ const ROOTS = [
   HOME + '/.dsh/skills',         // absent
   AGENTS_ROOT,
   HOME + '/.claude/skills',      // absent
+  LOCKED_ROOT,                   // present but unreadable
 ];
 
 // ── Stubs ──────────────────────────────────────────────────────────────────
 
 const shellCalls = [];
 
+// This stub models the REAL adapter, verified against a running DSH host:
+//   - resolve() succeeds even for a path that does not exist — it resolves,
+//     it does not stat — so absence can never be detected from a resolve throw;
+//   - listDir() rejects with `not found` for a directory that is not there;
+//   - stat() resolves to undefined for a missing path, which is the documented
+//     "is it there" contract and the only reliable absence signal.
+// An earlier version of this stub threw from resolve() instead. That encoded
+// the opposite assumption and hid a real misreport: every root that simply did
+// not exist came back as `unreadable`, i.e. as a read failure that never
+// happened.
 const fs = {
+  dirExists(p) {
+    if (p === PROJECT_ROOT || p === AGENTS_ROOT) return true;
+    if (p === LOCKED_ROOT) return true;
+    return Object.keys(FILES).some((f) => f.startsWith(p + '/'));
+  },
   async resolve(p) {
-    const exists = (p in FILES) || p === PROJECT_ROOT || p === AGENTS_ROOT;
-    if (!exists) throw new Error('ENOENT: ' + p);
     return { path: p };
+  },
+  async stat(target) {
+    return this.dirExists(target.path) ? { type: 'directory' } : undefined;
   },
   async listDir(target) {
     const root = target.path;
+    if (!this.dirExists(root)) throw new Error('cannot list "' + root + '": not found');
+    // A directory that IS there but cannot be read must stay `unreadable`: the
+    // disambiguation is stat's job, not the error message's.
+    if (root === LOCKED_ROOT) throw new Error('cannot list "' + root + '": permission denied');
     const names = new Set();
     for (const f of Object.keys(FILES)) {
       if (f.startsWith(root + '/')) names.add(f.slice(root.length + 1).split('/')[0]);
@@ -213,6 +242,13 @@ check('behind sorts first', out.skills[0].status === 'behind', out.skills[0].sta
 check('absent roots are reported',
   out.roots.filter((r) => r.status === 'absent').length === 3,
   out.roots.filter((r) => r.status === 'absent').length);
+check('a directory that exists but cannot be listed stays unreadable',
+  out.roots.filter((r) => r.status === 'unreadable').length === 1
+    && out.roots.some((r) => r.root === LOCKED_ROOT && r.status === 'unreadable'),
+  JSON.stringify(out.roots.map((r) => [r.root, r.status])));
+check('a missing root is never dressed up as a read failure',
+  out.roots.every((r) => !(r.status === 'unreadable' && r.root !== LOCKED_ROOT)),
+  JSON.stringify(out.roots.map((r) => [r.root, r.status])));
 check('note is null once something is managed', out.note === null, out.note);
 
 check('every git call sets GIT_TERMINAL_PROMPT=0',

@@ -1,6 +1,6 @@
 {
   "name": "@lzsusc2019/skills-watch",
-  "version": "0.18.4",
+  "version": "0.18.5",
   "description": "DSH plugin: watch installed agent skills and flag the managed ones that have fallen behind their upstream repository.",
   "type": "module",
   "license": "MIT",

@@ -2,7 +2,7 @@
 
 # 🛰️ skills-watch
 
-[![Version](https://img.shields.io/badge/version-0.18.4-2ea44f?style=flat-square)](CHANGELOG.md)
+[![Version](https://img.shields.io/badge/version-0.18.5-2ea44f?style=flat-square)](CHANGELOG.md)
 [![License](https://img.shields.io/badge/license-MIT-blue?style=flat-square)](LICENSE)
 [![Platform](https://img.shields.io/badge/platform-DSH%20Web-6f42c1?style=flat-square)](#)
 [![Runtime](https://img.shields.io/badge/runtime-Node.js-339933?style=flat-square&logo=nodedotjs&logoColor=white)](#)
@@ -136,7 +136,7 @@ local_sha  ≠  git ls-remote <repo> <ref>  返回的对象 SHA
 |---|---|
 | `repo` | `owner/name` 或完整 URL（`https://`、`git@`、`ssh://` 均接受） |
 | `ref` | 分支 / tag / `HEAD`。缺省 `HEAD`，指向远端默认分支 —— 不用 `main`，避免命名差异 |
-| `local_sha` | 本机当前所处的 commit |
+| `local_sha` | **声明**本机内容来自哪个 commit。插件只拿它和远端比对，**不会**校验它是否真的对应本地文件 —— 见「明确不做」一节 |
 | `synced_at` | 上次同步时间（目前仅记录，未参与判断） |
 
 </details>
@@ -224,7 +224,29 @@ local_sha  ≠  git ls-remote <repo> <ref>  返回的对象 SHA
 - **不自动更新**任何 skill —— 插件只读，写操作需要单独的权限模型
 - **不展示 diff** —— 只标状态，不展开变更内容
 - **不支持 GitHub 以外的 Git 源** —— `git ls-remote` 本身通用，但地址归一化只覆盖 GitHub 简写
-- **不处理本地手改过的 skill** —— 本地改动会让 `local_sha` 与远端不一致，此时显示 `behind`，这是已知的语义边界
+- **不校验本地内容、也发现不了本地手改** —— 比对的是 `.source.json` 里**声明**的 `local_sha` 与远端 SHA，从不哈希本地文件。手改 `SKILL.md` **不产生任何信号**，仍然显示 `up_to_date`；反之，`local_sha` 写错就会静默给出错误判定。这是这套检测模型的根本边界，改它需要引入内容哈希或本地 git 自省
+
+<details>
+<summary><b>为什么手改不显示 behind（这条曾经写反）</b></summary>
+
+`local_sha` 是**声明**，不是从本地内容推导出来的：
+
+```js
+row.localSha = str(source.local_sha);         // 只读 .source.json
+row.status = remote.sha === row.localSha ? 'up_to_date' : 'behind';
+```
+
+扫描器从不读本地 git（`.git` 只用于向上找项目根），也从不哈希 `SKILL.md`。所以：
+
+| 情况 | 实际结果 |
+|---|---|
+| 本地内容确实来自旧版本，`local_sha` 如实记录 | `behind` ✓ 正确 |
+| 手改 `SKILL.md`，`local_sha` 不动 | **`up_to_date`** —— 检测不到 |
+| `local_sha` 填错（填了无关 commit） | **错误的判定**，且无从察觉 |
+
+中间一行是设计取舍，最后一行是使用者需要负责的地方：`.source.json` 的正确性由写入它的一方保证。
+
+</details>
 
 ---
 
@@ -486,7 +508,10 @@ plugin/
 <details>
 <summary><b>三个测试各自覆盖什么</b></summary>
 
-**`test/smoke.js`** 用 stub 顶替 `ctx.fs` / `ctx.shell`，覆盖四种状态、YAML 块标量与嵌套解析、中英文描述压缩、根目录去重与排序、**根目录解析**（`.git` 向上查找、`DSH_HOME` / `DSH_AGENTS_HOME` / `DSH_BUNDLED_SKILL_DIR`、`roots` 替换 / `extraRoots` 追加 / `~` 展开、默认不含 `~/.claude/skills`），**逐次调用的 cwd**（项目根跟随会话、换工作区重新解析、同工作区复用缓存），以及几条接口契约（`GIT_TERMINAL_PROMPT`、`command`/`workdir` 而非 `argv`/`cwd`、返回值可 JSON 序列化）。零依赖，stub 自己掌管文件系统，不碰真实机器。56 条断言。
+**`test/smoke.js`** 用 stub 顶替 `ctx.fs` / `ctx.shell`，覆盖四种状态、YAML 块标量与嵌套解析、中英文描述压缩、根目录去重与排序、**根目录解析**（`.git` 向上查找、`DSH_HOME` / `DSH_AGENTS_HOME` / `DSH_BUNDLED_SKILL_DIR`、`roots` 替换 / `extraRoots` 追加 / `~` 展开、默认不含 `~/.claude/skills`）、**`absent` 与 `unreadable` 的区分**（目录不存在 vs 存在但列不出来），**逐次调用的 cwd**（项目根跟随会话、换工作区重新解析、同工作区复用缓存），以及几条接口契约（`GIT_TERMINAL_PROMPT`、`command`/`workdir` 而非 `argv`/`cwd`、返回值可 JSON 序列化）。零依赖，stub 自己掌管文件系统，不碰真实机器。58 条断言。
+
+> [!NOTE]
+> fs 桩按**实测的真实适配器**写：`resolve()` 对不存在的路径也会成功（它只解析、不 stat），`listDir()` 对不存在的目录抛 `not found`，而 `stat()` 返回 `undefined` 才是「不存在」的依据。桩一旦写成「`resolve` 抛错即不存在」，`absent` 分支就永远不会在真实运行时触发，测试却仍然全绿 —— 这已经发生过一次。
 
 **`test/wiring.mjs`** 用**真实的** `@deepseek-ai/dsh-typert-loader` 校验 Host manifest、用真实的 `remoteMethods()` 确认手动装饰器确实登记了 Remote 标记、校验 `request` 参数的 codec 与结果 schema（含 `projectRoot`）、核对客户端描述符与 package.json 接线、并解析 `cordis.patch.yml` 确认行与包名一致。34 条断言。这三个包从本包解析不到时会打印 SKIP 并以 0 退出，所以新克隆无需配置即可只跑 smoke。
 

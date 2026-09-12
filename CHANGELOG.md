@@ -2,6 +2,27 @@
 
 版本号对应动态 Cordis Package 的迭代。每个 Package ID（`pkg-N`）是一个不可变版本。
 
+## [0.18.5] — 2026-09-12
+
+修掉「目录不存在」被报成「读不出来」，并纠正文档里两处与实现相反的说法。
+
+### Fixed
+- **不存在的 skill 根目录被报成 `unreadable`。** 真实适配器的 `fs.resolve()` 对**不存在**的路径也会成功 —— 它只解析路径，不 stat —— 所以 `scanRoot` 里那个 `resolve` 抛错 → `absent` 的分支在真实部署中**从未触发**，所有从未创建的根目录都落到 `listDir` 失败 → `unreadable`，等于声称发生过一次并不存在的读失败。
+  实测证据：在某 checkout 上 `~/.dsh/skills` 与 `<project>/.agents/skills` 都不存在，却双双被报成 `unreadable`。
+  修法：`listDir` 失败后用 `fs.stat(dir)` 区分 —— 其契约是 `(target) => Promise<FsInfo | undefined>`，返回 `undefined` 即不存在。`stat` 缺失时保持 `unreadable`，行为不变。
+- **实测确认真实 fs 契约**（用 host 动态插件在运行中的 DSH 里取证）：`resolve(不存在)` 成功；`listDir(不存在)` 抛 `cannot list "…": not found`；`stat(不存在)` → `undefined`；`lstat(不存在)` → `undefined`。
+
+### Fixed (docs)
+- README 里 `local_sha` 被写成「本机当前所处的 commit」，**不处理本地手改**那条写成「本地改动会让 `local_sha` 与远端不一致，此时显示 `behind`」。两者都与实现相反：比对只发生在 `.source.json` **声明**的值与远端 SHA 之间，插件从不读本地 git、也从不哈希 `SKILL.md`。所以**手改不产生任何信号**（仍显示 `up_to_date`），而 `local_sha` 填错会**静默给出错误判定**。已改成准确表述，并补一个说明表格。
+
+### Added
+- `test/smoke.js` 56 → 58 条断言，并**把 fs 桩改成贴合实测契约**：`resolve` 对不存在路径成功、`listDir` 抛 `not found`、`stat` 返回 `undefined`。旧桩让 `resolve` 抛错，等于把错误假设编码进测试 —— 这正是该 bug 能全绿通过的原因。
+- 新增「存在但列不出来」的根目录（`LOCKED_ROOT`），正向覆盖 `unreadable`，并加一条断言防止把缺失目录伪装成读失败。两条断言都用「换回错误实现 → 失败 → 换回修复版 → 全过」实测过。
+
+### Verified
+- 全部三个测试：58 + 34 + 52 = **144 条断言**
+- 用运行中的 `skillsWatch.list()`（真实会话 cwd）确认：`total 14 / managed 2 / unmanaged 12 / behind 1 / up_to_date 1`，与逐个 skill 逐字节核对的结果一致
+
 ## [0.18.4] — 2026-09-12
 
 修掉客户端读取 Remote 时的**两个**错误。这两个错误叠在一起的表现是：徽章停在 `skills...`、面板显示 `not checked yet`、**没有任何报错**。

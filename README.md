@@ -2,7 +2,7 @@
 
 # 🛰️ skills-watch
 
-[![Version](https://img.shields.io/badge/version-0.18.0-2ea44f?style=flat-square)](CHANGELOG.md)
+[![Version](https://img.shields.io/badge/version-0.18.4-2ea44f?style=flat-square)](CHANGELOG.md)
 [![License](https://img.shields.io/badge/license-MIT-blue?style=flat-square)](LICENSE)
 [![Platform](https://img.shields.io/badge/platform-DSH%20Web-6f42c1?style=flat-square)](#)
 [![Runtime](https://img.shields.io/badge/runtime-Node.js-339933?style=flat-square&logo=nodedotjs&logoColor=white)](#)
@@ -21,12 +21,33 @@
 
 ## 🚀 快速开始
 
+**一行装好：**
+
 ```bash
-cd ~/.dsh/profiles/web
-pnpm add @lzsusc2019/skills-watch        # 本地未发布：pnpm add /path/to/skills-watch
+dsh plugin --profile web add "github:lzsusc2019/skills-watch"
 ```
 
-**② 注册为 bundle** —— 编辑 `~/.dsh/profiles/web/package.json`：
+`dsh plugin` 是 pnpm 的薄封装，它会做**两件事** —— 第二件才是它和裸 `pnpm add` 的关键区别：
+
+1. 在 profile 目录里转发给 `pnpm add`；
+2. 装完把 `dsh.profile.bundles` 与**实际安装结果**对账：凡是声明了 `dsh.bundle.patch` 的依赖，会被**自动追加**进 bundle 列表。
+
+所以**不需要手改 `package.json`**。
+
+> [!TIP]
+> 本包**没有构建步骤**（没有 `prepare` 脚本，`lib/` 是手写并直接发布的），所以这条命令不会撞上 pnpm 的构建拦截，也不需要往 `pnpm-workspace.yaml` 里加 `allowBuilds`。git 托管的插件通常需要那一步 —— 这也是为什么这类插件经常要"装两次才成"。
+
+装完**重启 DSH** —— profile 的包集合在启动时确定。
+
+<details>
+<summary><b>手动安装（等价做法）</b></summary>
+
+```bash
+cd ~/.dsh/profiles/web
+pnpm add "github:lzsusc2019/skills-watch"
+```
+
+再编辑 `~/.dsh/profiles/web/package.json`，把它加进 `dsh.profile.bundles`：
 
 ```json
 { "dsh": { "profile": { "bundles": [
@@ -36,10 +57,23 @@ pnpm add @lzsusc2019/skills-watch        # 本地未发布：pnpm add /path/to/s
 ] } } }
 ```
 
+裸 `pnpm` **不会**替你写这一行 —— 对账是 `dsh plugin` 那一步做的。两者结果一致。
+
 > [!IMPORTANT]
 > **只装依赖不加这一行，插件不会加载。** bundle 列表决定哪些包的 `cordis.patch.yml` 会被合并进组合树。
 
-**③ 重启 DSH** —— profile 的包集合在启动时确定。
+</details>
+
+<details>
+<summary><b>npm 形式（尚未可用）</b></summary>
+
+```bash
+dsh plugin --profile web add @lzsusc2019/skills-watch
+```
+
+包名已按 `@lzsusc2019/skills-watch` 命名，但**还没有发布到 npm**（当前 registry 返回 404）。发布之后上面这条才可用，在那之前请用 GitHub 形式。
+
+</details>
 
 <details>
 <summary><b>为什么是 profile 而不是 agent preset</b></summary>
@@ -53,8 +87,6 @@ pnpm add @lzsusc2019/skills-watch        # 本地未发布：pnpm add /path/to/s
     - id: skills-watch
       name: '@lzsusc2019/skills-watch'
 ```
-
-`dsh plugin --profile web add <package>` 是同一件事的官方命令 —— 它把参数转发给 profile 目录里的 pnpm。
 
 </details>
 

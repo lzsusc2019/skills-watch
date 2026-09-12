@@ -2,6 +2,23 @@
 
 版本号对应动态 Cordis Package 的迭代。每个 Package ID（`pkg-N`）是一个不可变版本。
 
+## [0.18.2] — 2026-09-12
+
+修掉官方包形态第一次真跑时的启动失败。
+
+### Fixed
+- **`lib/client.js` 不再 `require("zod")`。** 客户端模块表里没有 zod 的 factory，注册时报
+  `client-modules: require("zod") missed the module table — not a platform seed word, not a shell-own module, and no registered factory`。
+  官方包是**构建时把 zod 内联进产物**，本包刻意没有构建步骤，所以改为手写客户端真正需要的那点表面：
+  `parse` 校验顶层形状、归一化可选字段，逐行差异交给渲染层。
+  依据是客户端侧的契约本身 —— `requireStrictCodec` 只读 `codec.mode`，`parse()` 只调
+  `codec.schema.parse(value)`，从不触及校验器内部。`lib/typert.host.js` 保持真 zod，因为 host 加载器**确实**检查
+  `_zod` 与 `parse`。
+
+### Added
+- `test/wiring.mjs` 新增客户端 require 守卫：只允许模块表确实提供的 id（依据是所有已发布客户端产物里出现过的
+  require 清单），并断言不得 require 校验器库。这条本该在 v0.18.1 发布前就存在
+
 ## [0.18.1] — 2026-09-12
 
 扫描目录不再照某一台机器写死，改为镜像 DSH 自己的解析逻辑。

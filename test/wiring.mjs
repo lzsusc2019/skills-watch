@@ -115,6 +115,46 @@ try {
   console.log('  SKIP  patch check (yaml not resolvable: ' + err.message + ')');
 }
 
+
+console.log('\n--- client module requires ---');
+{
+  // A require() in the client artifact that the client module table does not
+  // know fails at registration: "missed the module table — not a platform seed
+  // word, not a shell-own module, and no registered factory". That is how
+  // v0.18.1 died on `require("zod")`, so the ids are checked here.
+  const src = await readFile(join(REPO, 'lib/client.js'), 'utf8');
+  // Drop comment lines so the explanatory comment naming require("zod") is not
+  // read as a call.
+  const code = src.split('\n').filter((line) => !/^\s*\/\//.test(line)).join('\n');
+  const requires = [...code.matchAll(/require\("([^"]+)"\)/g)].map((m) => m[1]);
+
+  // Every id observed across the shipped client bundles. The table seeds
+  // react / react-dom / jsx-runtime, platform words, and shell-own modules, plus
+  // one factory per registered dsh.client package — nothing else.
+  const KNOWN = new Set([
+    'react',
+    'react-dom',
+    'react/jsx-runtime',
+    '@deepseek-ai/cordis',
+    '@deepseek-ai/dsh-client-runtime/client',
+    '@deepseek-ai/dsh-client-schema-form',
+    '@deepseek-ai/dsh-client-ui-attachment',
+    '@deepseek-ai/dsh-client-ui-primitives',
+    '@deepseek-ai/dsh-client-ui-slots',
+    '@deepseek-ai/dsh-client-web-react',
+  ]);
+
+  const unknown = requires.filter((id) => !KNOWN.has(id));
+  check('the client half requires only modules the table provides',
+    unknown.length === 0,
+    unknown.length ? 'unknown: ' + unknown.join(', ') : undefined);
+  check('the client half does not require a validator library',
+    !requires.includes('zod'),
+    requires.join(', '));
+  check('the client codec schemas expose parse() without a library',
+    /schema: requestSchema/.test(code) && /schema: resultSchema/.test(code));
+}
+
 console.log('\n--- package.json wiring ---');
 check('exports["./typert"] points at the host manifest', pkg.exports['./typert'] === './lib/typert.host.js');
 check('exports["./remote"] points at the descriptors', pkg.exports['./remote'] === './lib/typert.remote-client.js');

@@ -458,7 +458,13 @@ plugin/
 
 **`test/wiring.mjs`** 用**真实的** `@deepseek-ai/dsh-typert-loader` 校验 Host manifest、用真实的 `remoteMethods()` 确认手动装饰器确实登记了 Remote 标记、校验 `request` 参数的 codec 与结果 schema（含 `projectRoot`）、核对客户端描述符与 package.json 接线、并解析 `cordis.patch.yml` 确认行与包名一致。34 条断言。这三个包从本包解析不到时会打印 SKIP 并以 0 退出，所以新克隆无需配置即可只跑 smoke。
 
-**`test/client-exec.mjs`** 补的是**执行路径**，因为上面两个只校验形状：v0.18.2 就是靠形状检查全绿却仍然启动失败。它在一个只有 `window` 的裸上下文里求值 `lib/client.js`、给 factory 一个**只提供平台模块表**的 `require`（其余 id 一律抛加载器原话 `missed the module table`）、用桩服务调用 `apply()` 并 await 挂载 effect 跑通 `$mount` 与首次轮询、用 Host 真正收到的 descriptor 调 codec 的 `parse()`（正例反例都验）、最后用 `react-dom/server` **真的渲染**徽章与面板，并模拟点击把面板打开、再点开折叠的空根目录。44 条断言，覆盖到具体的文案（`1 behind`、两个 SHA、`check failed`）。解析不到 react 时打印 SKIP 并以 0 退出。
+**`test/client-exec.mjs`** 补的是**执行路径**，因为上面两个只校验形状：v0.18.2 就是靠形状检查全绿却仍然启动失败。它在一个只有 `window` 的裸上下文里求值 `lib/client.js`、给 factory 一个**只提供平台模块表**的 `require`（其余 id 一律抛加载器原话 `missed the module table`）、用桩服务调用 `apply()` 并 await 挂载 effect 跑通 `$mount` 与首次轮询、用 Host 真正收到的 descriptor 调 codec 的 `parse()`（正例反例都验）、最后用 `react-dom/server` **真的渲染**徽章与面板，并模拟点击把面板打开、再点开折叠的空根目录。52 条断言，覆盖到具体的文案（`1 behind`、两个 SHA、`check failed`）。解析不到 react 时打印 SKIP 并以 0 退出。
+
+它的桩刻意按**运行时真实契约**搭，而不是按代码的假设搭 —— v0.18.3 的两个 bug 恰恰是因为桩把错误假设写进了测试，才一路全绿：
+
+- namespace 只经 `ctx.reflect.get("remote.skillsWatch")` 提供；`ctx.remote.skillsWatch` 是**抛异常的 getter**，谁用它谁立刻失败
+- `list()` 返回真实的 Result 信封 `{ ok: true, value }`，不是裸快照
+- 另有三个失败场景：`$mount` 拒绝、namespace 未挂载、`{ ok: false, error }` 失败信封 —— 三者都必须显示成**可见的错误**，不得被当成干净的空结果
 
 本地要跑 wiring 与 client-exec，把工具链链接进来：
 

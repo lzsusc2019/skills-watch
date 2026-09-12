@@ -220,6 +220,23 @@ const mounted = [];
 const listCalls = [];
 const effectRuns = [];
 
+// Faithful stub of the two services this package consumes.
+//
+// The namespace deliberately hangs off `ctx.reflect.get("remote.skillsWatch")`
+// and NOT off the `remote` service. api-gateway registers each mounted
+// namespace as its own Cordis Service under the key `remote.<namespace>`, and
+// ClientRemoteService exposes no getter for it — reading `ctx.remote.skillsWatch`
+// is rejected outright by the inject guard. Providing it here would re-encode
+// the exact mistake that shipped in v0.18.3.
+//
+// The reply is likewise wrapped in the real Result envelope
+// (`{ ok: true, value }`), which is what api-gateway's install() resolves with.
+// Returning the bare snapshot here would hide the second v0.18.3 mistake: the
+// client read `.skills` straight off the envelope and drew an empty table.
+const namespaceService = {
+	async list(request) { listCalls.push(request); return { ok: true, value: FIXTURE }; },
+};
+
 const ctx = {
 	slots: {
 		inject(name, cb) { return cb(); },
@@ -230,9 +247,18 @@ const ctx = {
 	},
 	remote: {
 		async $mount(descriptors) { mounted.push(descriptors); return function dispose() {}; },
-		skillsWatch: {
-			async list(request) { listCalls.push(request); return FIXTURE; },
+		// Poisoned on purpose: the namespace is a separate service under
+		// `remote.<namespace>`, never a property of `remote`. v0.18.3 read this
+		// and silently got undefined; anything that touches it now fails loudly.
+		get skillsWatch() {
+			throw new Error(
+				'the client read ctx.remote.skillsWatch — the mounted namespace is a separate '
+				+ 'Cordis service and must be read with ctx.reflect.get("remote.skillsWatch")',
+			);
 		},
+	},
+	reflect: {
+		get(key) { return key === "remote.skillsWatch" ? namespaceService : undefined; },
 	},
 	effect(cb, label) { effectRuns.push({ label, result: cb() }); },
 };
@@ -431,6 +457,151 @@ if (panel && typeof panel.Component === "function") {
 				check("the expanded panel dims the empty root", expanded.includes("is-idle"), "markup: " + expanded.slice(0, 600));
 			}
 		}
+	}
+}
+
+// ── 6. A failed $mount must be visible, not silent ────────────────────────
+// Before v0.18.4 a $mount rejection escaped the effect into Cordis' logger only.
+// The store stayed at its initial state, so the badge read "skills..." and the
+// panel read "not checked yet" with no indication that anything was wrong —
+// which is exactly how the namespace bug above stayed hidden. Build a second
+// module instance whose $mount rejects and assert the failure reaches the UI.
+{
+	const failingRegistered = [];
+	const failingEffects = [];
+	const failingCtx = {
+		slots: {
+			inject(name, cb) { return cb(); },
+			register(meta, Component) { failingRegistered.push({ meta, Component }); return function dispose() {}; },
+		},
+		remote: {
+			async $mount() { throw new Error("no carrier for remote.skillsWatch"); },
+		},
+		reflect: { get() { return undefined; } },
+		effect(cb, label) { failingEffects.push({ label, result: cb() }); },
+	};
+
+	const failingMod = spec.factory(requireFromTable);
+	let failingApplyError = null;
+	try {
+		failingMod.apply(failingCtx);
+	} catch (err) {
+		failingApplyError = err;
+	}
+	check(
+		"apply() survives a rejecting $mount",
+		failingApplyError === null,
+		failingApplyError === null ? undefined : String(failingApplyError && failingApplyError.message),
+	);
+
+	let failingEffectError = null;
+	try {
+		await Promise.all(failingEffects.map((e) => e.result));
+	} catch (err) {
+		failingEffectError = err;
+	}
+	check(
+		"the mount effect absorbs the rejection instead of leaving it unhandled",
+		failingEffectError === null,
+		failingEffectError === null ? undefined : String(failingEffectError && failingEffectError.message),
+	);
+
+	const failingBadge = failingRegistered.find((r) => r.meta && r.meta.id === "skills-watch-badge");
+	const failingPanel = failingRegistered.find((r) => r.meta && r.meta.id === "skills-watch-overlay");
+
+	if (failingBadge && typeof failingBadge.Component === "function") {
+		const markup = String(renderToStaticMarkup(ReactShim.createElement(failingBadge.Component, {})));
+		check(
+			"a failed mount shows up on the badge",
+			markup.includes("skills error") && markup.includes("no carrier for remote.skillsWatch"),
+			"markup: " + markup.slice(0, 220),
+		);
+	}
+
+	if (failingPanel && typeof failingPanel.Component === "function") {
+		// The panel only renders while open, so open it through its own store.
+		const panelled = failingRegistered.find((r) => r.meta && r.meta.id === "skills-watch-badge");
+		if (panelled && typeof panelled.Component === "function") {
+			renderToStaticMarkup(ReactShim.createElement(panelled.Component, {}));
+			const opener = clicks.slice(-1)[0];
+			if (opener !== undefined && typeof opener.onClick === "function") opener.onClick();
+		}
+		const markup = String(renderToStaticMarkup(ReactShim.createElement(failingPanel.Component, {})));
+		// Opening the panel re-runs refresh(), which replaces the mount error with
+		// the "namespace is not mounted" diagnosis. Either message is a correct
+		// explanation, so assert on the error line rather than one exact string.
+		check(
+			"a failed mount is explained in the panel",
+			markup.includes("sw-err") && /not mounted yet|mount failed/.test(markup),
+			"markup: " + markup.slice(0, 400),
+		);
+	}
+}
+
+// ── 7. A failing Result envelope must reach the UI as an error ────────────
+// The carrier answers a failed call with `{ ok: false, error: { code, message } }`
+// instead of rejecting. Handed on unwrapped, that envelope has no `skills` field,
+// so the panel would draw an empty table and claim everything was fine.
+{
+	const envRegistered = [];
+	const envEffects = [];
+	const ENVELOPE_ERROR = "skills-watch: git ls-remote failed";
+	const envCtx = {
+		slots: {
+			inject(name, cb) { return cb(); },
+			register(meta, Component) { envRegistered.push({ meta, Component }); return function dispose() {}; },
+		},
+		remote: {
+			async $mount() { return function dispose() {}; },
+			get skillsWatch() { throw new Error("must not be read"); },
+		},
+		reflect: {
+			get(key) {
+				if (key !== "remote.skillsWatch") return undefined;
+				return {
+					async list() {
+						return { ok: false, error: { code: "internal", message: ENVELOPE_ERROR, details: {} } };
+					},
+				};
+			},
+		},
+		effect(cb, label) { envEffects.push({ label, result: cb() }); },
+	};
+
+	const envMod = spec.factory(requireFromTable);
+	let envApplyError = null;
+	try {
+		envMod.apply(envCtx);
+	} catch (err) {
+		envApplyError = err;
+	}
+	check("apply() accepts a ctx whose replies will fail", envApplyError === null, envApplyError === null ? undefined : String(envApplyError && envApplyError.message));
+
+	let envEffectError = null;
+	try {
+		await Promise.all(envEffects.map((e) => e.result));
+	} catch (err) {
+		envEffectError = err;
+	}
+	check(
+		"a failed envelope does not reject the mount effect",
+		envEffectError === null,
+		envEffectError === null ? undefined : String(envEffectError && envEffectError.message),
+	);
+
+	const envBadge = envRegistered.find((r) => r.meta && r.meta.id === "skills-watch-badge");
+	if (envBadge && typeof envBadge.Component === "function") {
+		const markup = String(renderToStaticMarkup(ReactShim.createElement(envBadge.Component, {})));
+		check(
+			"a failed envelope is reported on the badge",
+			markup.includes("skills error") && markup.includes("git ls-remote failed"),
+			"markup: " + markup.slice(0, 260),
+		);
+		check(
+			"a failed envelope is not mistaken for a clean empty result",
+			!markup.includes("skills ok"),
+			"markup: " + markup.slice(0, 260),
+		);
 	}
 }
 

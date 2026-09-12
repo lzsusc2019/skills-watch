@@ -2,6 +2,51 @@
 
 版本号对应动态 Cordis Package 的迭代。每个 Package ID（`pkg-N`）是一个不可变版本。
 
+## [0.18.4] — 2026-09-12
+
+修掉客户端读取 Remote 时的**两个**错误。这两个错误叠在一起的表现是：徽章停在 `skills...`、面板显示 `not checked yet`、**没有任何报错**。
+
+排查结论不是在代码里猜出来的，而是在**运行中的 DSH 里实测**得到的，过程记在下面。
+
+### Fixed
+
+- **namespace 不能用 `ctx.remote.<ns>` 读。** 每个挂载的 namespace 是 api-gateway 在 key
+  **`remote.<namespace>`** 下注册的**独立 Cordis Service**（`RemoteNamespaceService` 里
+  `super(ctx, remoteServiceKey(name))`），而 `ClientRemoteService` **没有**任何 getter 把它暴露成属性。
+  实测报错是 `cannot get property "remote.skillsWatch" without inject`；而它也**不能**写进 `inject`
+  —— namespace 要等 `$mount` 之后才存在，写进 inject 会让 apply 等一个由 apply 自己创建的服务。
+  改为 `ctx.reflect.get("remote.skillsWatch")`，与能正常工作的第三方插件 `dsh-at-file` 读
+  `ctx.reflect.get("remote.atFile")` 的做法一致。
+  又因为 `namespace()` 是在 `refresh()` 的 try **之外**调用的，这个抛错会让整个挂载 effect 失败，
+  store 停在初始状态 —— 这正是"什么都没发生"的来源。
+
+- **Remote 方法返回的是 Result 信封，不是业务值。** api-gateway 的 `install()` 里
+  `{ ok: true, value: parse(descriptor.result, …) }` / `{ ok: false, error }`。
+  之前直接读 `res.skills`，拿到的是信封 → 永远是空表，且 `error` 被置成 null，
+  界面就表现成"干干净净的 0 个 skill"。新增 `unwrapRemote()`：成功取 `.value`，
+  `ok: false` 时抛出 `${code}: ${message}`，失败不再伪装成空结果。
+
+- **挂载失败不再静默。** `$mount` 的 rejection 之前只进 Cordis 日志，store 保持初始状态。
+  现在写进 store，徽章与面板都会显示 `mount failed: …`。
+
+### Verified（在运行中的 DSH 里实测）
+
+用动态 Cordis 插件对当前进程与当前页面取证：
+
+- **host 半边完全正常**：`typert.getPackage('@lzsusc2019/skills-watch','host')` 有记录、
+  `ctx.get('skillsWatch')` 已挂载、`list()` 返回 3 个 skill（`find-skills` / `journal-reflection` /
+  `voice-debrief`）
+- **client 半边**：用 `inject: ['remote.skillsWatch']` 成功激活，证明该 namespace **确实已挂载**；
+  `ns.list({})` 解析为 `{ ok: true, value: … }` → 两个 bug 都是从这里定案的
+
+### Added
+- `test/client-exec.mjs` 从 44 条扩到 52 条，并把两个**真实契约**编码进桩里，防止再退回去：
+  - `remote.skillsWatch` 改成**抛异常的 getter**，代码一旦用它就立刻失败并给出说明
+  - namespace 只经 `ctx.reflect.get("remote.skillsWatch")` 提供
+  - `list()` 返回真实的 `{ ok: true, value }` 信封
+  - 新增"失败信封"场景：`{ ok: false, error }` 必须显示成错误，且**不得**被当成干净的空结果
+- 两个 bug 都用「换回错误实现 → 测试失败 → 换回修复版 → 全过」实测过确实抓得住
+
 ## [0.18.3] — 2026-09-12
 
 修掉 `require("zod")` 之后暴露出来的第二个启动失败，并补上一个能真正跑起来客户端半边的测试。

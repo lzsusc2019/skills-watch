@@ -1,10 +1,13 @@
 {
   "name": "@lzsusc2019/skills-watch",
-  "version": "0.18.2",
+  "version": "0.18.3",
   "description": "DSH plugin: watch installed agent skills and flag the managed ones that have fallen behind their upstream repository.",
   "type": "module",
   "license": "MIT",
   "main": "lib/index.js",
+  "scripts": {
+    "test": "node test/smoke.js && node test/wiring.mjs && node test/client-exec.mjs"
+  },
   "exports": {
     ".": "./lib/index.js",
     "./typert": "./lib/typert.host.js",

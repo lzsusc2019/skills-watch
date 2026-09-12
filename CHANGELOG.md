@@ -2,6 +2,40 @@
 
 版本号对应动态 Cordis Package 的迭代。每个 Package ID（`pkg-N`）是一个不可变版本。
 
+## [0.18.3] — 2026-09-12
+
+修掉 `require("zod")` 之后暴露出来的第二个启动失败，并补上一个能真正跑起来客户端半边的测试。
+
+### Fixed
+- **`lib/client.js` factory 体内的暂时性死区（TDZ）。** 报错是
+  `Cannot access 'requestSchema' before initialization`。`const TYPERT_REMOTE` 在 factory 体顶层**立即求值**，
+  它的对象字面量里 `schema: requestSchema` / `schema: resultSchema` 读的是**声明在后面**的两个 `const`。
+  加载器调用 factory 时整段执行，于是进 TDZ 抛错，整个 loader entry 失败（所以报的是
+  `failed to import loader entry …`，脚本本身能正常求值）。
+  修法是把 `schemaFail` / `isRecord` / `requestSchema` / `resultSchema` 整块**移到 `TYPERT_REMOTE` 之前**，
+  只调整声明顺序，没有改任何行为。
+
+### Added
+- **`test/client-exec.mjs`（44 条断言）—— 真正执行客户端产物，而不是只校验形状。**
+  v0.18.2 那个 TDZ 是 `test/wiring.mjs` 结构性检查永远抓不到的，所以这个测试补的是执行路径：
+  1. 在只有 `window` 的裸上下文里求值 `lib/client.js`，让顶层崩溃按浏览器的样子暴露；
+  2. 给 factory 一个**只提供平台模块表**（react / react-dom / react/jsx-runtime）的 `require`，其余一律抛加载器原话
+     "missed the module table" —— 这正是 v0.18.1 那次 `require("zod")` 的守卫；
+  3. 用 `slots` / `remote` / `effect` 桩调用 `apply()`，并 await 挂载 effect，跑通 `$mount` 与首次轮询；
+  4. 用 Host 真正收到的 descriptor 调 codec 的 `parse()`，正例反例都验；
+  5. 用 `react-dom/server` **真的渲染**两个 slot 组件，并模拟点击徽章把面板打开，再点开折叠的空根目录。
+- `package.json` 增加 `scripts.test`，一次跑完三个测试
+- 测试里断言了 `ctx.effect(async …)` 用法：查过 Cordis `_execute`（`@deepseek-ai/cordis/lib/index.js`），
+  它显式处理 thenable 返回值（`else if ("then" in effect) return effect.then(safeCollect)`），
+  所以 async 回调里 `await $mount` 再把 disposer 返回是官方支持写法
+
+### Verified
+- `test/smoke.js` 56 条、`test/wiring.mjs` 34 条、`test/client-exec.mjs` 44 条，全过
+- **这个测试确实抓得住那个 bug，是实测的**：把修复前的 `lib/client.js` 换回去跑，
+  它在「the factory runs under the real module table」这一条上以
+  `Cannot access 'requestSchema' before initialization` 失败并退出 1；换回修复版即 ALL PASS。
+  换句话说这条守卫不是事后编的
+
 ## [0.18.2] — 2026-09-12
 
 修掉官方包形态第一次真跑时的启动失败。

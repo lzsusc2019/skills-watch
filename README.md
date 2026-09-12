@@ -423,8 +423,10 @@ export function applyRemoteDecorator(proto, name, decorator) {
 ## 📁 目录与测试
 
 ```bash
+npm test                # 三个一起跑
 node test/smoke.js      # 检测核心，零依赖
 node test/wiring.mjs    # 官方通道接线，需要 DSH 工具链
+node test/client-exec.mjs   # 真正执行并渲染浏览器半边，需要 react
 ```
 
 <details>
@@ -442,6 +444,7 @@ lib/
 test/
   smoke.js                   检测核心冒烟测试（零依赖）
   wiring.mjs                 官方通道接线测试（需 DSH 工具链）
+  client-exec.mjs            浏览器半边的执行与渲染测试（需 react）
 plugin/
   host.js / client.js        动态插件版本（见下）
 ```
@@ -449,13 +452,15 @@ plugin/
 </details>
 
 <details>
-<summary><b>两个测试各自覆盖什么</b></summary>
+<summary><b>三个测试各自覆盖什么</b></summary>
 
 **`test/smoke.js`** 用 stub 顶替 `ctx.fs` / `ctx.shell`，覆盖四种状态、YAML 块标量与嵌套解析、中英文描述压缩、根目录去重与排序、**根目录解析**（`.git` 向上查找、`DSH_HOME` / `DSH_AGENTS_HOME` / `DSH_BUNDLED_SKILL_DIR`、`roots` 替换 / `extraRoots` 追加 / `~` 展开、默认不含 `~/.claude/skills`），**逐次调用的 cwd**（项目根跟随会话、换工作区重新解析、同工作区复用缓存），以及几条接口契约（`GIT_TERMINAL_PROMPT`、`command`/`workdir` 而非 `argv`/`cwd`、返回值可 JSON 序列化）。零依赖，stub 自己掌管文件系统，不碰真实机器。56 条断言。
 
-**`test/wiring.mjs`** 用**真实的** `@deepseek-ai/dsh-typert-loader` 校验 Host manifest、用真实的 `remoteMethods()` 确认手动装饰器确实登记了 Remote 标记、校验 `request` 参数的 codec 与结果 schema（含 `projectRoot`）、核对客户端描述符与 package.json 接线、并解析 `cordis.patch.yml` 确认行与包名一致。31 条断言。这三个包从本包解析不到时会打印 SKIP 并以 0 退出，所以新克隆无需配置即可只跑 smoke。
+**`test/wiring.mjs`** 用**真实的** `@deepseek-ai/dsh-typert-loader` 校验 Host manifest、用真实的 `remoteMethods()` 确认手动装饰器确实登记了 Remote 标记、校验 `request` 参数的 codec 与结果 schema（含 `projectRoot`）、核对客户端描述符与 package.json 接线、并解析 `cordis.patch.yml` 确认行与包名一致。34 条断言。这三个包从本包解析不到时会打印 SKIP 并以 0 退出，所以新克隆无需配置即可只跑 smoke。
 
-本地要跑 wiring，把工具链链接进来：
+**`test/client-exec.mjs`** 补的是**执行路径**，因为上面两个只校验形状：v0.18.2 就是靠形状检查全绿却仍然启动失败。它在一个只有 `window` 的裸上下文里求值 `lib/client.js`、给 factory 一个**只提供平台模块表**的 `require`（其余 id 一律抛加载器原话 `missed the module table`）、用桩服务调用 `apply()` 并 await 挂载 effect 跑通 `$mount` 与首次轮询、用 Host 真正收到的 descriptor 调 codec 的 `parse()`（正例反例都验）、最后用 `react-dom/server` **真的渲染**徽章与面板，并模拟点击把面板打开、再点开折叠的空根目录。44 条断言，覆盖到具体的文案（`1 behind`、两个 SHA、`check failed`）。解析不到 react 时打印 SKIP 并以 0 退出。
+
+本地要跑 wiring 与 client-exec，把工具链链接进来：
 
 ```bash
 mkdir -p node_modules/@deepseek-ai
@@ -463,9 +468,11 @@ ln -s /path/to/deployment/node_modules/@deepseek-ai/dsh-typert-loader  node_modu
 ln -s /path/to/deployment/node_modules/@deepseek-ai/dsh-typert-protocol node_modules/@deepseek-ai/
 ln -s /path/to/deployment/node_modules/zod node_modules/
 ln -s /path/to/deployment/node_modules/yaml node_modules/
+ln -s /path/to/deployment/node_modules/react node_modules/
+ln -s /path/to/deployment/node_modules/react-dom node_modules/
 ```
 
-Client 半边依赖 React 与 Slot 运行时，不在自动化测试覆盖范围内。
+`client-exec.mjs` 用 `react-dom/server` 渲染，能覆盖组件逻辑、slot 注册与 store 行为，但它不模拟真实浏览器：`<style>` 标签的注入、真实 slot 宿主给的 props、以及 DSH 客户端运行时本身都不在其中。**真实部署里的渲染仍要靠手动开一次页面确认。**
 
 </details>
 
@@ -513,7 +520,7 @@ Client 半边依赖 React 与 Slot 运行时，不在自动化测试覆盖范围
 
 动态 Cordis Package 的源码 —— 在 DSH 会话里通过 `cordis_define` + `cordis_run` 加载的形式，与官方包**并存但独立**：动态插件的代码是**函数体**，不能 `import`，所以逻辑有一份自带副本，而不是引用 `lib/scan.js`。
 
-保留它是因为它是**唯一在真实会话里跑通过渲染的形式**（徽章、面板、点击展开、状态渲染都实测过）。官方包的 Host 逻辑由 `test/smoke.js` 覆盖、接线由 `test/wiring.mjs` 校验，但浏览器半边的真实渲染尚未在部署里验证。
+保留它是因为它是**唯一在真实会话里跑通过渲染的形式**（徽章、面板、点击展开、状态渲染都实测过）。官方包的 Host 逻辑由 `test/smoke.js` 覆盖、接线由 `test/wiring.mjs` 校验、组件执行与渲染由 `test/client-exec.mjs` 用 `react-dom/server` 覆盖，但**官方包形态在真实部署里的渲染仍未验证过** —— 那需要实际开一次页面。
 
 > [!WARNING]
 > 安装官方包后，动态版本应当停用，避免两个徽章。

@@ -2,6 +2,26 @@
 
 版本号对应动态 Cordis Package 的迭代。每个 Package ID（`pkg-N`）是一个不可变版本。
 
+## [0.18.1] — 2026-09-12
+
+扫描目录不再照某一台机器写死，改为镜像 DSH 自己的解析逻辑。
+
+### Fixed
+- **默认根目录改为镜像 `@deepseek-ai/dsh-skill-filesystem` 的 `roots()`**：项目级 `<projectRoot>/.dsh/skills` 与 `.agents/skills`、用户级 `<DSH_HOME>/skills` 与 `<DSH_AGENTS_HOME>/skills`、打包级 `$DSH_BUNDLED_SKILL_DIR`。之前硬编码 `/Users/taozi/...`，别人装上结果必然不同
+- **`~/.claude/skills` 移出默认列表** —— 那是 Claude Code 的目录，DSH 不从那里加载
+- `<projectRoot>` 改用与 DSH 相同的算法（向上找 `.git`，落到根则返回原 cwd），不再拿 `process.cwd()` 直接当项目根
+
+### Added
+- **`list({ cwd })`**：Client 把当前会话的工作目录（`SessionSummary.cwd`，读自 slot prop `useSessions`）传给 Host，项目级 skill 因此跟随用户实际所在的工作区，而不是 DSH 进程启动目录。换工作区会重新解析，同工作区复用缓存
+- 配置键 `extraRoots`（追加）、`dshHome` / `agentsHome` / `bundledSkillDir` / `customSkillDirs`；`roots` 仍是完全替换
+- 结果新增 `projectRoot`，并在面板 `from` 行的悬停提示里显示 —— 项目级 skill 找不到时，这就是要看的那一项
+- `lib/scan.js` 导出 `resolveRoots` / `findProjectRoot` / `expandHome` 供测试
+
+### Verified
+- `test/smoke.js` 56 条断言（原 33 条，新增根目录解析与逐次 cwd 覆盖）
+- `test/wiring.mjs` 31 条断言（新增 `request` 参数 codec 与结果 schema 校验）
+- 根目录解析在真实机器上核对过：`/Users/taozi/Documents/personal/.dsh/skills` 与 `/Users/taozi/.agents/skills` 在默认列表中，`~/.claude/skills` 被排除
+
 ## [0.18.0] — 2026-09-12
 
 从「只能在 DSH 会话里 paste 源码运行的动态插件」变成**可安装的官方插件包**。

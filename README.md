@@ -113,20 +113,52 @@ local_sha  ≠  git ls-remote <repo> <ref>  返回的对象 SHA
 
 ## ⚙️ 配置
 
-默认无需配置：扫描器以 Host 进程的 `HOME` 为主目录基准、`cwd` 为项目基准。
+### 扫描哪些目录
+
+默认**镜像 DSH 自己的解析逻辑**（`@deepseek-ai/dsh-skill-filesystem` 的 `roots()`），而不是照某台机器的目录写死：
+
+| # | 目录 | 来源 |
+|---|---|---|
+| 1 | `<projectRoot>/.dsh/skills` | 项目级 |
+| 2 | `<projectRoot>/.agents/skills` | 项目级 |
+| 3 | `<DSH_HOME>/skills` | 用户级，默认 `~/.dsh/skills` |
+| 4 | `<DSH_AGENTS_HOME>/skills` | 用户级，默认 `~/.agents/skills` |
+| 5 | `$DSH_BUNDLED_SKILL_DIR` | 打包技能，仅在该变量设置时扫 |
+
+`<projectRoot>` 的确定方式与 DSH 一致：从工作目录向上找 `.git`，找到就取那一层；一直到文件系统根都没找到，就用工作目录本身。
+
+**顺序有意义** —— 同名 skill 由靠前的目录胜出，去重后只保留一份。面板的 `from` 行显示每个目录实际贡献了几个 skill，被去重掉的标为 `duplicate`。
+
+**工作目录来自当前会话。** Client 半边把会话的 `cwd`（读自 `useSessions` 的 `SessionSummary.cwd`）传给 Host 的 `list({ cwd })`，所以你在哪个仓库里工作，项目级 skill 就从那个仓库找 —— 不是从 DSH 进程启动时所在的目录。换工作区会重新解析。没有会话时回退到 Host 进程的 cwd。
+
+### 两件刻意不默认包含的事
+
+镜像 DSH 也意味着两样东西不在默认列表里，因为它们本就不在 DSH 的加载路径上：
+
+- **`customSkillDirs`** —— 由每个 agent preset 自行声明（例如某插件把技能打进 preset 目录），profile 级插件看不到。需要就用 `extraRoots` 加。
+- **`~/.claude/skills`** —— Claude Code 的目录，DSH 不从那里加载。同时用 Claude Code 并想一起盯，用 `extraRoots` 加。
+
+两样都能在面板的 `from` 行里看出结果 —— 配错了是可见的，不是静默的。
+
+### 配置键
 
 | 键 | 默认 | 作用 |
 |---|---|---|
-| `home` | `process.env.HOME` | 主目录基准 |
-| `project` | `process.cwd()` | 项目基准 |
-| `roots` | `home` / `project` 推导出的 5 个目录 | 扫描目录，**按顺序**；同名 skill 由靠前的根目录胜出 |
+| `roots` | 推断 | **完全替换**扫描列表；给了它就不再推断 |
+| `extraRoots` | 无 | 追加到列表末尾，支持 `~` |
+| `project` | 会话 cwd | 固定项目基准；给了它就不再跟随会话 |
+| `home` | `$HOME` | `~` 展开与路径显示用的主目录 |
+| `dshHome` | `$DSH_HOME` ?? `~/.dsh` | Harness home |
+| `agentsHome` | `$DSH_AGENTS_HOME` ?? `~/.agents` | agents home |
+| `bundledSkillDir` | `$DSH_BUNDLED_SKILL_DIR` | 打包技能目录 |
+| `customSkillDirs` | 无 | preset 式的额外目录，追加 |
 | `cacheTtlMs` | 24h | 远端 SHA 缓存时长 |
 | `maxSummary` | 100 | 面板上描述压缩后的字符上限 |
 
 `GITHUB_TOKEN` 目前**未使用**；私有仓库需要凭据时 `git ls-remote` 会失败并落到 `unknown`。
 
 <details>
-<summary><b>固定路径的 config 写法</b></summary>
+<summary><b>config 写法</b></summary>
 
 在 `cordis.patch.yml` 的行里加 `config`：
 
@@ -135,13 +167,20 @@ local_sha  ≠  git ls-remote <repo> <ref>  返回的对象 SHA
     - id: skills-watch
       name: '@lzsusc2019/skills-watch'
       config:
-        home: /Users/you
-        project: /Users/you/work
+        project: /Users/you/work          # 固定项目基准（替代会话 cwd 推导）
+        extraRoots:                       # 追加到默认列表之后
+          - ~/.claude/skills
+        cacheTtlMs: 86400000
+        maxSummary: 100
+```
+
+要把扫描列表完全接管，用 `roots` 代替 `extraRoots`：
+
+```yaml
+      config:
         roots:
           - /Users/you/work/.dsh/skills
           - /Users/you/.agents/skills
-        cacheTtlMs: 86400000
-        maxSummary: 100
 ```
 
 </details>
@@ -158,6 +197,30 @@ local_sha  ≠  git ls-remote <repo> <ref>  返回的对象 SHA
 ---
 
 ## 📐 DSH 接口事实
+
+<details>
+<summary><b>技能根目录由 preset 声明，host 平面看不到</b></summary>
+
+`@deepseek-ai/dsh-skill-filesystem` 是**每个 agent preset 注册一份**的（`cordis` preset 里那一行还带 `customSkillDirs`），所以它的扫描结果落在该 preset 的层里。profile 级的插件没有 agent scope，`ctx.skills.list()` 在那一层看到的是空 —— 这正是动态插件时代 `ctx.skills` 始终返回 `[]` 的原因。
+
+所以 host 平面的插件要列 skill，只能自己扫文件系统，并且必须**镜像 DSH 的根目录解析**，否则只能对上自己那台机器。`findProjectRoot` 的算法就是向上找 `.git`，落到根就返回原 cwd。
+
+另外 `ctx.skills` 与模型看到的 `<available_skills>` 目录也不是同一份数据 —— 后者含 system prompt 注入的部分。
+
+</details>
+
+<details>
+<summary><b>槽位 props 里的 selector hook</b></summary>
+
+`useSessions` / `useSession` 等是作为 slot prop 传进来的 hook：
+
+```ts
+export type SnapshotSelectorHook<T> = <S>(sel: (s: T) => S, eq?: (a: S, b: S) => boolean) => S;
+```
+
+它们只能从组件里调用。本项目用一个**仅在 prop 存在时渲染**的子组件承载它 —— hook 调用点无条件，条件性的是元素本身。`SessionSummary.cwd` 就是会话的工作目录。
+
+</details>
 
 再写同类插件可以直接照抄的一节。**全部内容在下面的折叠块里** —— 点开看细节。
 
@@ -347,18 +410,11 @@ export function applyRemoteDecorator(proto, name, decorator) {
 </details>
 
 <details>
-<summary><b>三条 Ajax 之外最容易踩的</b></summary>
+<summary><b>最容易踩的三条渲染/序列化陷阱</b></summary>
 
 1. **改普通对象的属性不会触发 React 重渲染。** 徽章会永远冻结在首帧、点击也没有任何反应。必须走 `React.useState` + `React.useEffect` 订阅一个外部 store。
 2. **`shell.overlay` 是点击穿透的。** 槽位文档原话：*"The layer itself is click-through — entries opt back into pointer events"*。面板根节点必须显式写 `pointerEvents: 'auto'`，否则渲染出来了但按钮全是死的。
 3. **RPC 返回值必须是 lossless JSON**，不能含 `NaN` / `Infinity` / class 实例 / `Map` / `Set` / `Date` / `function`。`Number(undefined)` 得到 `NaN` 是最常见的来源。
-
-</details>
-
-<details>
-<summary><b><code>ctx.skills</code> 不适合做「列出所有 skill」</b></summary>
-
-在本部署下 `ctx.skills.list()` 返回空数组 —— 文件系统里明明有一批 skill。直接扫 `ctx.fs` 才是可靠路径。`ctx.skills` 与模型看到的 `<available_skills>` 目录也不是同一份数据。
 
 </details>
 
@@ -395,9 +451,9 @@ plugin/
 <details>
 <summary><b>两个测试各自覆盖什么</b></summary>
 
-**`test/smoke.js`** 用 stub 顶替 `ctx.fs` / `ctx.shell`，覆盖四种状态、YAML 块标量与嵌套解析、中英文描述压缩、根目录去重、排序，以及几条接口契约（`GIT_TERMINAL_PROMPT`、`command`/`workdir` 而非 `argv`/`cwd`、返回值可 JSON 序列化）。零依赖，stub 自己掌管文件系统，不碰真实机器。
+**`test/smoke.js`** 用 stub 顶替 `ctx.fs` / `ctx.shell`，覆盖四种状态、YAML 块标量与嵌套解析、中英文描述压缩、根目录去重与排序、**根目录解析**（`.git` 向上查找、`DSH_HOME` / `DSH_AGENTS_HOME` / `DSH_BUNDLED_SKILL_DIR`、`roots` 替换 / `extraRoots` 追加 / `~` 展开、默认不含 `~/.claude/skills`），**逐次调用的 cwd**（项目根跟随会话、换工作区重新解析、同工作区复用缓存），以及几条接口契约（`GIT_TERMINAL_PROMPT`、`command`/`workdir` 而非 `argv`/`cwd`、返回值可 JSON 序列化）。零依赖，stub 自己掌管文件系统，不碰真实机器。56 条断言。
 
-**`test/wiring.mjs`** 用**真实的** `@deepseek-ai/dsh-typert-loader` 校验 Host manifest、用真实的 `remoteMethods()` 确认手动装饰器确实登记了 Remote 标记、核对客户端描述符与 package.json 接线、并解析 `cordis.patch.yml` 确认行与包名一致。这三个包从本包解析不到时会打印 SKIP 并以 0 退出，所以新克隆无需配置即可只跑 smoke。
+**`test/wiring.mjs`** 用**真实的** `@deepseek-ai/dsh-typert-loader` 校验 Host manifest、用真实的 `remoteMethods()` 确认手动装饰器确实登记了 Remote 标记、校验 `request` 参数的 codec 与结果 schema（含 `projectRoot`）、核对客户端描述符与 package.json 接线、并解析 `cordis.patch.yml` 确认行与包名一致。31 条断言。这三个包从本包解析不到时会打印 SKIP 并以 0 退出，所以新克隆无需配置即可只跑 smoke。
 
 本地要跑 wiring，把工具链链接进来：
 

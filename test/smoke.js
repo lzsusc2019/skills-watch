@@ -7,7 +7,7 @@
 // frontmatter parsing, description compression, root de-duplication, and the
 // shell-request contract. Nothing here touches the real machine.
 
-import { createScanner, summarize, parseFrontmatter } from '../lib/scan.js';
+import { createScanner, summarize, parseFrontmatter, resolveRoots, findProjectRoot, expandHome } from '../lib/scan.js';
 
 // ── Fixtures ───────────────────────────────────────────────────────────────
 // These roots must match the scanner configuration below; a fixture placed
@@ -223,6 +223,144 @@ check('shell requests use command/workdir, not argv/cwd',
 check('result is lossless JSON', (() => {
   try { JSON.parse(JSON.stringify(out)); return true; } catch { return false; }
 })());
+
+
+console.log('\n--- root resolution ---');
+
+// A filesystem that only knows the listed paths, so `.git` probing is
+// deterministic and no real directory is consulted.
+function probeFs(paths) {
+  const set = new Set(paths);
+  return {
+    async resolve(p) {
+      if (!set.has(p)) throw new Error('ENOENT: ' + p);
+      return { path: p };
+    },
+    async stat(target) {
+      return set.has(target.path) ? { type: 'directory' } : undefined;
+    },
+  };
+}
+
+{
+  const r = await resolveRoots({
+    fs: probeFs(['/home/u/work/.git']),
+    env: { HOME: '/home/u' },
+    cwd: '/home/u/work/deep/nested',
+  });
+  check('project root is found by walking up to .git',
+    r.roots.includes('/home/u/work/.dsh/skills') && r.roots.includes('/home/u/work/.agents/skills'),
+    JSON.stringify(r.roots));
+  check('user roots come from HOME', 
+    r.roots.includes('/home/u/.dsh/skills') && r.roots.includes('/home/u/.agents/skills'),
+    JSON.stringify(r.roots));
+  check('~/.claude/skills is NOT a default root (the Harness never loads from it)',
+    !r.roots.some((p) => p.includes('.claude')), JSON.stringify(r.roots));
+  check('project roots are ordered before user roots',
+    r.roots.indexOf('/home/u/work/.dsh/skills') < r.roots.indexOf('/home/u/.dsh/skills'),
+    JSON.stringify(r.roots));
+  check('the resolved projectRoot is reported back', r.projectRoot === '/home/u/work', r.projectRoot);
+}
+
+{
+  const r = await resolveRoots({
+    fs: probeFs(['/home/u/work/.git']),
+    env: { HOME: '/home/u', DSH_HOME: '/custom/dsh', DSH_AGENTS_HOME: '/custom/agents', DSH_BUNDLED_SKILL_DIR: '/bundled/skills' },
+    cwd: '/home/u/work',
+  });
+  check('DSH_HOME overrides the Harness home', r.roots.includes('/custom/dsh/skills'), JSON.stringify(r.roots));
+  check('DSH_AGENTS_HOME overrides the agents home', r.roots.includes('/custom/agents/skills'), JSON.stringify(r.roots));
+  check('DSH_BUNDLED_SKILL_DIR is scanned', r.roots.includes('/bundled/skills'), JSON.stringify(r.roots));
+}
+
+{
+  const r = await resolveRoots({
+    fs: probeFs(['/home/u/work/.git']),
+    env: { HOME: '/home/u' },
+    cwd: '/home/u/work',
+    config: { roots: ['/only/this'], extraRoots: ['/plus/this'] },
+  });
+  check('an explicit roots list replaces the inferred one',
+    r.roots.length === 2 && r.roots[0] === '/only/this' && r.roots[1] === '/plus/this',
+    JSON.stringify(r.roots));
+  check('the config source is reported', r.source === 'config', r.source);
+}
+
+{
+  const r = await resolveRoots({
+    fs: probeFs(['/home/u/work/.git']),
+    env: { HOME: '/home/u' },
+    cwd: '/home/u/work',
+    config: { extraRoots: ['~/.claude/skills'] },
+  });
+  check('extraRoots appends to the defaults', r.roots.includes('/home/u/.claude/skills'), JSON.stringify(r.roots));
+  check('extraRoots expands ~', !r.roots.some((p) => p.startsWith('~')), JSON.stringify(r.roots));
+}
+
+{
+  const r = await resolveRoots({ fs: probeFs([]), env: { HOME: '/home/u' }, cwd: '/no/git/anywhere' });
+  check('falling off the filesystem root keeps the original cwd', r.projectRoot === '/no/git/anywhere', r.projectRoot);
+  check('user roots survive a cwd with no project', r.roots.includes('/home/u/.dsh/skills'), JSON.stringify(r.roots));
+}
+
+{
+  const home = await findProjectRoot(probeFs(['/a/.git']), '/a/b/c');
+  check('findProjectRoot walks up to the .git directory', home === '/a', home);
+}
+
+check('expandHome leaves absolute paths alone', expandHome('/abs/path', '/home/u') === '/abs/path');
+check('expandHome expands a bare ~', expandHome('~', '/home/u') === '/home/u');
+
+
+console.log('\n--- per-call cwd ---');
+
+// The client passes the session's cwd, so project roots follow the workspace
+// the user is actually in rather than the Host process's own directory.
+{
+  const gitFs = {
+    async resolve(p) {
+      if (p === '/repo/.git' || p.startsWith('/repo/.dsh') || p === '/repo') return { path: p };
+      throw new Error('ENOENT: ' + p);
+    },
+    async stat(target) { return { type: 'directory' }; },
+    async listDir() { return []; },
+    async readText() { throw new Error('ENOENT'); },
+  };
+  const sc = createScanner({
+    fs: gitFs,
+    shell,
+    env: { HOME: '/home/u' },
+    cwd: '/elsewhere',
+    config: {},
+  });
+  const out = await sc.poll({ cwd: '/repo/src' });
+  const roots = out.roots.map((r) => r.root);
+  check('a per-call cwd drives project-root discovery',
+    roots.includes('/repo/.dsh/skills') && roots.includes('/repo/.agents/skills'),
+    JSON.stringify(roots));
+  check('the resolved projectRoot is reported in the result', out.projectRoot === '/repo', out.projectRoot);
+  check('user roots are still included', roots.includes('/home/u/.dsh/skills'), JSON.stringify(roots));
+}
+
+{
+  // Two different workspaces must not share a cached layout.
+  const gitFs = {
+    async resolve(p) { return { path: p }; },
+    async stat(target) {
+      return (target.path === '/repoA/.git' || target.path === '/repoB/.git') ? { type: 'directory' } : undefined;
+    },
+    async listDir() { return []; },
+    async readText() { throw new Error('ENOENT'); },
+  };
+  const sc = createScanner({ fs: gitFs, shell, env: { HOME: '/home/u' }, cwd: '/nowhere', config: {} });
+  const a = await sc.poll({ cwd: '/repoA/x' });
+  const b = await sc.poll({ cwd: '/repoB/y' });
+  check('switching workspace re-resolves the roots',
+    a.projectRoot === '/repoA' && b.projectRoot === '/repoB',
+    a.projectRoot + ' / ' + b.projectRoot);
+  const a2 = await sc.poll({ cwd: '/repoA/x' });
+  check('the same workspace reuses the cached layout', a2.projectRoot === '/repoA', a2.projectRoot);
+}
 
 console.log('\n' + (failed.length === 0 ? 'ALL PASS' : failed.length + ' FAILED: ' + failed.join(' | ')));
 process.exit(failed.length === 0 ? 0 : 1);

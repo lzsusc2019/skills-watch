@@ -52,7 +52,26 @@ try {
 
 const inv = host.TYPERT.invocations[0];
 check('invocation id is <pkg>#<service>/<method>', inv.id === pkg.name + '#skillsWatch/list', inv.id);
-check('invocation declares no parameters (list() takes none)', inv.parameters.length === 0);
+check('invocation declares exactly one parameter', inv.parameters.length === 1, inv.parameters.length);
+check('the parameter is the JSON `request`', inv.parameters[0].name === 'request'
+  && inv.parameters[0].wire === 'request' && inv.parameters[0].source === 'json',
+  JSON.stringify(inv.parameters[0] && { name: inv.parameters[0].name, wire: inv.parameters[0].wire, source: inv.parameters[0].source }));
+check('the parameter codec is strict and zod-backed',
+  inv.parameters[0].codec.mode === 'strict'
+  && typeof inv.parameters[0].codec.schema.parse === 'function');
+check('the request schema accepts an optional cwd',
+  (() => {
+    const ok1 = inv.parameters[0].codec.schema.safeParse({}).success;
+    const ok2 = inv.parameters[0].codec.schema.safeParse({ cwd: '/tmp/x' }).success;
+    const bad = inv.parameters[0].codec.schema.safeParse({ cwd: 5 }).success;
+    return ok1 && ok2 && !bad;
+  })());
+check('the result schema carries projectRoot',
+  inv.result.schema.safeParse({
+    skills: [], roots: [], projectRoot: null,
+    summary: { total: 0, managed: 0, unmanaged: 0, behind: 0, upToDate: 0, unknown: 0 },
+    note: null, polledAt: '2026-01-01T00:00:00Z',
+  }).success);
 check('result codec is strict and zod-backed',
   inv.result.mode === 'strict' && '_zod' in inv.result.schema && typeof inv.result.schema.parse === 'function');
 check('manifest face is host', host.TYPERT.face === 'host');

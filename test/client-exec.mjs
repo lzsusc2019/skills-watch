@@ -34,7 +34,12 @@ import { fileURLToPath } from "node:url";
 import vm from "node:vm";
 
 const here = dirname(fileURLToPath(import.meta.url));
-const root = resolve(here, "..");
+// SKILLS_WATCH_ROOT lets this test run against an installed copy instead of the
+// checkout — the only way to prove that what a profile actually loads is the
+// artifact this test passes on.
+const root = process.env.SKILLS_WATCH_ROOT
+	? resolve(process.env.SKILLS_WATCH_ROOT)
+	: resolve(here, "..");
 
 let pass = 0;
 let fail = 0;

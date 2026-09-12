@@ -2,6 +2,32 @@
 
 版本号对应动态 Cordis Package 的迭代。每个 Package ID（`pkg-N`）是一个不可变版本。
 
+## [0.18.0] — 2026-09-12
+
+从「只能在 DSH 会话里 paste 源码运行的动态插件」变成**可安装的官方插件包**。
+
+### Added
+- `package.json`：官方包元数据 —— `exports`（`.` / `./typert` / `./remote` / `./client`）、`dsh.bundle.patch`、`dsh.client`（`platform` + 包名 `inject`）
+- `cordis.patch.yml`：profile bundle 的行声明
+- `lib/scan.js`：检测核心从 Host 半边抽出，改为注入 `fs` / `shell`，可脱离运行时测试
+- `lib/index.js`：Host 半边改成 `TypertRemoteService` 子类，`list()` 经手动装饰器登记为 Remote
+- `lib/typert.host.js` / `lib/typert.remote-client.js`：手写的 Typert 产物
+- `lib/client.js`：浏览器半边改成 `window.__ModuleLoader__.load` 格式，数据源从 `host.call` 换成 `ctx.remote.skillsWatch.list()`
+- `test/wiring.mjs`：用真实的 `validateTypertManifest` 与 `remoteMethods()` 校验接线
+- README 大篇幅重写：官方通道、包结构、Typert 契约、装饰器免构建、客户端模块格式
+
+### Changed
+- 扫描目录默认值改为从 Host 进程推导（`process.env.HOME` / `process.cwd()`），不再硬编码 `/Users/taozi`
+- `test/smoke.js` 改为直接 import `lib/scan.js`，不再用 `new Function` 包函数体
+
+### Verified
+- `test/smoke.js` 33 条断言通过（检测核心）
+- `test/wiring.mjs` 19 条断言通过，其中 Host manifest 由部署里**真实的** `validateTypertManifest` 校验，Remote 标记由**真实的** `remoteMethods()` 读回 —— 证明手写 manifest 与免构建装饰器都成立
+
+### Notes
+- **客户端半边的真实渲染尚未在部署里验证。** 它由已验证的 `plugin/client.js` 改写而来（React store、pointer-events、渲染结构均未变），但官方包形态只做过离线校验
+- 发布到 npm 前需要确认 `@lzsusc2019` scope 可用；若用别的名字，需同步改 `package.json` 的 `name`、`lib/typert.host.js` 的 `package` 与 `id`、`lib/client.js` 内联描述符里的同一批字符串、以及 `cordis.patch.yml` 的行 `name`
+
 ## [0.17] — 2026-09-12
 
 最后一个版本。功能完成，代码归档。

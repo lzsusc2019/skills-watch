@@ -7,3 +7,6 @@ Thumbs.db
 .idea/
 *.swp
 *~
+
+# Local install of the DSH peer toolchain (link for local verification)
+node_modules/

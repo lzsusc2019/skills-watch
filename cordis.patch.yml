@@ -1,0 +1,25 @@
+# skills-watch — loaded as a DSH profile bundle.
+#
+# Installed as a dependency of a profile and listed in that profile's
+# `dsh.profile.bundles`, this patch layer inserts one row: the Host service that
+# publishes the `skillsWatch` Typert Remote.
+#
+# Why the profile (host plane) and not an agent preset: the service's consumer is
+# the browser client, which lives outside any agent session. A preset row that
+# published a service would land in the process-global realm and collide on the
+# second session that mounted it.
+- insert:
+    - id: skills-watch
+      name: '@lzsusc2019/skills-watch'
+      # config is optional. Omitted, the scanner uses the Host process's HOME as
+      # the home base and its cwd as the project base. Override either, or the
+      # whole root list, to pin them:
+      #
+      # config:
+      #   home: /Users/you
+      #   project: /Users/you/work
+      #   roots:
+      #     - /Users/you/work/.dsh/skills
+      #     - /Users/you/.agents/skills
+      #   cacheTtlMs: 86400000
+      #   maxSummary: 100
